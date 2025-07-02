@@ -1,0 +1,711 @@
+DROP USER DAP CASCADE;
+CREATE USER DAP IDENTIFIED BY DAP;
+GRANT CONNECT,RESOURCE TO DAP;
+ALTER USER DAP DEFAULT TABLESPACE users;
+ALTER USER DAP TEMPORARY TABLESPACE temp;
+ALTER USER DAP QUOTA UNLIMITED on users;
+CONN DAP/DAP@orcl;
+
+
+-- Create tables
+CREATE TABLE users (
+    user_id NUMBER(20)PRIMARY KEY,
+    user_name VARCHAR2(50) NOT NULL,
+    password VARCHAR2(100) NOT NULL,
+    email VARCHAR2(100) UNIQUE,
+    phone NUMBER(15) NOT NULL,
+    role VARCHAR2(20) NOT NULL CHECK (role IN ('admin', 'doctor', 'staff', 'patient'))
+);
+
+CREATE TABLE Doctors (
+    doctor_id NUMBER(20) PRIMARY KEY,
+    user_id NUMBER(20) REFERENCES users(user_id),
+    name VARCHAR2(100) NOT NULL,
+    qualification VARCHAR2(100),
+    designation VARCHAR2(100),
+    specialization VARCHAR2(100),
+    phone NUMBER(15) NOT NULL,
+    email VARCHAR2(100)
+);
+
+CREATE TABLE Schedules (
+    schedule_id NUMBER(20) PRIMARY KEY,
+    doctor_id NUMBER(20) REFERENCES doctors(doctor_id),
+    schedule_date date,
+    schedule_time TIMESTAMP Not null,
+    status VARCHAR2(30)
+);
+
+CREATE TABLE Patients (
+    patient_id number(30) PRIMARY KEY,
+    phone NUMBER(15) NOT NULL,
+    name VARCHAR2(100) NOT NULL,
+    Date_of_Birth DATE,
+    Age NUMBER(3), -- Updated from VARCHAR2 to NUMBER
+    Weight DECIMAL(5,2),
+    gender VARCHAR2(10) CHECK (gender IN ('Male', 'Female', 'Other')),
+    email VARCHAR2(100),
+    address CLOB,
+    create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR2(15)
+);
+
+
+CREATE TABLE Appointments (
+    appointment_id NUMBER(20) PRIMARY KEY,
+    serial_no NUMBER,
+    patient_id number(30) REFERENCES patients(patient_id),
+    appointment_datetime TIMESTAMP NOT NULL,
+    status VARCHAR2(20) DEFAULT 'pending' 
+        CHECK (status IN ('pending', 'confirmed', 'completed', 'cancelled')),
+    schedule_id number(20)  REFERENCES Schedules(schedule_id),
+    create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR2(15)
+);
+
+CREATE TABLE Generic (
+    generic_id number(20)  PRIMARY KEY ,
+    generic_name VARCHAR2(100) NOT NULL
+);
+
+CREATE TABLE Medicine (
+    medicine_id number(10)PRIMARY KEY ,
+    brand_name VARCHAR(100) NOT NULL,
+    generic_id number(20) REFERENCES Generic(generic_id),
+    dosage_form varchar2(25),
+    strength varchar2(50)  
+);
+
+
+CREATE TABLE Prescription (
+    prescription_id NUMBER(10) PRIMARY KEY,
+    appointment_id NUMBER(20) REFERENCES Appointments(appointment_id),
+    doctor_id NUMBER(20) REFERENCES Doctors(doctor_id),
+    issue_date DATE NOT NULL,
+    test_discount NUMBER(5,2) DEFAULT 0,
+    create_date DATE DEFAULT SYSDATE,
+    created_by VARCHAR2(30)
+);
+
+CREATE TABLE Prescription_Medicine (
+    prescription_medicine_id number(20) PRIMARY KEY ,
+    prescription_id NUMBER(10) references prescription(prescription_id),
+    medicine_id number(10) references medicine(medicine_id),
+    dosage varchar2(100),
+    duration VARCHAR2(50)
+);
+
+CREATE TABLE Test_List (
+    test_id number(20) PRIMARY KEY,
+    test_name VARCHAR2(100) NOT NULL,
+    test_category VARCHAR2(100)
+);
+
+CREATE TABLE Prescribed_Test (
+    prescribed_test_id number(20) PRIMARY KEY,
+    test_id number(20) references test_list(test_id),
+    prescription_id number(10) references prescription(prescription_id),
+    test_name VARCHAR2(100)
+);
+
+CREATE TABLE Test_Report_Master (
+    test_report_master_id number PRIMARY KEY,
+    doctor_id number(15) REFERENCES doctors(doctor_id),
+    sample_date DATE,
+    patient_id number(30) REFERENCES patients(patient_id),
+    report_date DATE,
+    test_id number(20) references test_list(test_id),
+    report_by VARCHAR(100),
+    created_by varchar2(30)
+);
+
+CREATE TABLE Test_Report_Details (
+    test_report_details_id number PRIMARY KEY,
+    test_report_master_id number references test_report_master(test_report_master_id),
+    particulars VARCHAR2(100),
+    reference_value VARCHAR2(100),
+    result_value VARCHAR2(100)
+);
+
+CREATE TABLE Investigation (
+    investigation_id number(20) PRIMARY KEY,
+    prescription_id NUMBER(30) REFERENCES prescription(prescription_id),
+    problem_name VARCHAR2(100)
+);
+
+CREATE TABLE Advice (
+    advice_id number(20) PRIMARY KEY,
+    prescription_id number(10) references prescription(prescription_id),
+    advice_type VARCHAR2(50),
+    advice_text varchar2(100),
+    follow_up_day date
+);
+
+CREATE TABLE Expense_Master (
+    expense_id number(20) PRIMARY KEY,
+    user_id NUMBER(20) REFERENCES users(user_id),
+    expense_date DATE,
+    category VARCHAR2(100),
+    total_amount number(10,2)
+);
+
+CREATE TABLE Expense_Details (
+    detail_id number PRIMARY KEY,
+    expense_id number(20) references expense_master(expense_id),
+    description varchar2(100),
+    amount number(10,2)
+);
+
+
+-- TRIGGER trg_expense_details_aiud TOTAL AMOUNT AUTO UPDATE
+CREATE OR REPLACE TRIGGER trg_expense_details_aiud
+FOR INSERT OR DELETE OR UPDATE ON Expense_Details
+COMPOUND TRIGGER
+
+    TYPE expense_id_tab IS TABLE OF VARCHAR2(10);
+    v_expense_ids expense_id_tab := expense_id_tab();
+
+    AFTER EACH ROW IS
+    BEGIN
+        -- Insert/Update case
+        IF INSERTING OR UPDATING THEN
+            v_expense_ids.EXTEND;
+            v_expense_ids(v_expense_ids.COUNT) := :NEW.expense_id;
+        END IF;
+
+        -- Delete case
+        IF DELETING THEN
+            v_expense_ids.EXTEND;
+            v_expense_ids(v_expense_ids.COUNT) := :OLD.expense_id;
+        END IF;
+    END AFTER EACH ROW;
+
+    AFTER STATEMENT IS
+    BEGIN
+        FOR i IN 1 .. v_expense_ids.COUNT LOOP
+            DECLARE
+                v_total NUMBER(10,2);
+            BEGIN
+                SELECT NVL(SUM(amount), 0)
+                INTO v_total
+                FROM Expense_Details
+                WHERE expense_id = v_expense_ids(i);
+
+                UPDATE Expense_Master
+                SET total_amount = v_total
+                WHERE expense_id = v_expense_ids(i);
+            END;
+        END LOOP;
+    END AFTER STATEMENT;
+
+END trg_expense_details_aiud;
+/
+
+--create trigger auto age insert
+CREATE OR REPLACE TRIGGER trg_set_patient_age
+BEFORE INSERT OR UPDATE ON Patients
+FOR EACH ROW
+WHEN (NEW.Date_of_Birth IS NOT NULL)
+BEGIN
+    :NEW.Age := TRUNC(MONTHS_BETWEEN(SYSDATE, :NEW.Date_of_Birth) / 12);
+END;
+/
+
+--Appointments auto create_date
+CREATE OR REPLACE TRIGGER trg_appointment_audit
+BEFORE INSERT ON Appointments
+FOR EACH ROW
+BEGIN
+    :NEW.create_date := SYSTIMESTAMP;
+END;
+/
+
+--TRIGGER auto trg_appointment_schedule_update
+CREATE OR REPLACE TRIGGER trg_appointment_update
+AFTER INSERT OR UPDATE OF status ON Appointments
+FOR EACH ROW
+DECLARE
+    v_schedule_status Schedules.status%TYPE;
+BEGIN
+    IF :NEW.status = 'confirmed' AND (:OLD.status IS NULL OR :OLD.status != 'confirmed') THEN
+        UPDATE Schedules
+        SET status = 'Booked'
+        WHERE schedule_id = :NEW.schedule_id;
+      ELSIF :NEW.status = 'cancelled' AND (:OLD.status IS NULL OR :OLD.status != 'cancelled') THEN
+        UPDATE Schedules
+        SET status = 'Available'
+        WHERE schedule_id = :NEW.schedule_id;
+    END IF;
+END;
+/
+
+
+
+-- Users
+CREATE SEQUENCE SEQ_USER_ID START WITH 101 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Doctors
+CREATE SEQUENCE SEQ_DOCTOR_ID START WITH 201 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Schedules
+CREATE SEQUENCE SEQ_SCHEDULE_ID START WITH 301 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Patients
+CREATE SEQUENCE SEQ_PATIENT_ID START WITH 401 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Appointments
+CREATE SEQUENCE SEQ_APPOINTMENT_ID START WITH 501 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Generic
+CREATE SEQUENCE SEQ_GENERIC_ID START WITH 601 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Medicine
+CREATE SEQUENCE SEQ_MEDICINE_ID START WITH 701 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Prescription
+CREATE SEQUENCE SEQ_PRESCRIPTION_ID START WITH 801 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Prescription_Medicine
+CREATE SEQUENCE SEQ_PRESC_MED_ID START WITH 901 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Test_List
+CREATE SEQUENCE SEQ_TEST_ID START WITH 1001 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Prescribed_Test
+CREATE SEQUENCE SEQ_PRESC_TEST_ID START WITH 1101 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Test_Report_Master
+CREATE SEQUENCE SEQ_TEST_RPT_MST_ID START WITH 1201 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Test_Report_Details
+CREATE SEQUENCE SEQ_TEST_RPT_DTL_ID START WITH 1301 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Investigation
+CREATE SEQUENCE SEQ_INVESTIGATION_ID START WITH 1401 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Advice
+CREATE SEQUENCE SEQ_ADVICE_ID START WITH 1501 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Expense_Master
+CREATE SEQUENCE SEQ_EXP_MASTER_ID START WITH 1601 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Expense_Details
+CREATE SEQUENCE SEQ_EXP_DETAIL_ID START WITH 1701 INCREMENT BY 1 NOCACHE NOCYCLE;
+
+-- Inserting data into USERS table
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (101, 'Osman', 'osman123', 'admin@example.com', 1720029987, 'admin');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (102, 'Dr.Smith', 'pass_doctor_123', 'dr.smith@example.com', 1700000002, 'doctor');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (103, 'StaffMember1', 'pass_staff_123', 'staff1@example.com', 1700000003, 'staff');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (104, 'Shakir', 'shakir123', 'shakir@example.com', 1700000004, 'admin');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (105, 'Noor', 'noor123', 'noor@example.com', 1700000005, 'admin');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (106, 'PatientUser3', 'secure_patient_3', 'patient3@example.com', 1700000006, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (107, 'PatientUser4', 'secure_patient_4', 'patient4@example.com', 1700000007, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (108, 'PatientUser5', 'secure_patient_5', 'patient5@example.com', 1700000008, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (109, 'PatientUser6', 'secure_patient_6', 'patient6@example.com', 1700000009, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (110, 'PatientUser7', 'secure_patient_7', 'patient7@example.com', 1700000010, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (111, 'PatientUser8', 'secure_patient_8', 'patient8@example.com', 1700000011, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (112, 'PatientUser9', 'secure_patient_9', 'patient9@example.com', 1700000012, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (113, 'PatientUser10', 'secure_patient_10', 'patient10@example.com', 1700000013, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (114, 'PatientUser11', 'secure_patient_11', 'patient11@example.com', 1700000014, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (115, 'PatientUser12', 'secure_patient_12', 'patient12@example.com', 1700000015, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (116, 'PatientUser13', 'secure_patient_13', 'patient13@example.com', 1700000016, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (117, 'PatientUser14', 'secure_patient_14', 'patient14@example.com', 1700000017, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (118, 'PatientUser15', 'secure_patient_15', 'patient15@example.com', 1700000018, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (119, 'PatientUser16', 'secure_patient_16', 'patient16@example.com', 1700000019, 'patient');
+INSERT INTO users (user_id, user_name, password, email, phone, role) VALUES (120, 'PatientUser17', 'secure_patient_17', 'patient17@example.com', 1700000020, 'patient');
+
+-- Inserting data into DOCTORS table
+INSERT INTO Doctors (doctor_id, user_id, name, qualification, designation, specialization, phone, email) VALUES (1, 102, 'Dr. Emily Smith', 'MBBS, FCPS (Medicine)', 'Senior Consultant', 'Internal Medicine', 1712345678, 'dremily.smith@example.com');
+
+-- Inserting data into SCHEDULES table
+-- Changed 'schedule_timestamp' to 'schedule_time' to match the CREATE TABLE statement.
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1001, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), TIMESTAMP '2025-07-01 09:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1002, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), TIMESTAMP '2025-07-01 10:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1003, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), TIMESTAMP '2025-07-01 11:00:00', 'Booked');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1004, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), TIMESTAMP '2025-07-01 14:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1005, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), TIMESTAMP '2025-07-01 15:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1006, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), TIMESTAMP '2025-07-02 09:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1007, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), TIMESTAMP '2025-07-02 10:00:00', 'Booked');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1008, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), TIMESTAMP '2025-07-02 11:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1009, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), TIMESTAMP '2025-07-02 14:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1010, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), TIMESTAMP '2025-07-02 15:00:00', 'Booked');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1011, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), TIMESTAMP '2025-07-03 09:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1012, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), TIMESTAMP '2025-07-03 10:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1013, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), TIMESTAMP '2025-07-03 11:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1014, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), TIMESTAMP '2025-07-03 14:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1015, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), TIMESTAMP '2025-07-03 15:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1016, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), TIMESTAMP '2025-07-04 09:00:00', 'Booked');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1017, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), TIMESTAMP '2025-07-04 10:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1018, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), TIMESTAMP '2025-07-04 11:00:00', 'Available');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1019, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), TIMESTAMP '2025-07-04 14:00:00', 'Booked');
+INSERT INTO Schedules (schedule_id, doctor_id, schedule_date, schedule_time, status) VALUES (1020, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), TIMESTAMP '2025-07-04 15:00:00', 'Available');
+
+-- Inserting data into PATIENTS table
+-- Added 'Age' and 'Weight' columns with default values as they are NOT NULL in the table schema.
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000004, 1700000004, 'Alice Johnson', TO_DATE('1990-05-15', 'YYYY-MM-DD'), 35, 65.00, 'Female', 'alice.j@example.com', '123 Main St, City A', TO_TIMESTAMP('2025-06-15 10:00:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000005, 1700000005, 'Bob Williams', TO_DATE('1985-11-20', 'YYYY-MM-DD'), 39, 80.50, 'Male', 'bob.w@example.com', '456 Oak Ave, City B', TO_TIMESTAMP('2025-06-15 10:05:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000006, 1700000006, 'Charlie Brown', TO_DATE('1978-03-25', 'YYYY-MM-DD'), 47, 75.20, 'Male', 'charlie.b@example.com', '789 Pine Ln, City C', TO_TIMESTAMP('2025-06-15 10:10:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000007, 1700000007, 'Diana Prince', TO_DATE('1992-07-01', 'YYYY-MM-DD'), 33, 60.10, 'Female', 'diana.p@example.com', '101 Cedar Rd, City D', TO_TIMESTAMP('2025-06-15 10:15:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000008, 1700000008, 'Eve Adams', TO_DATE('2000-01-01', 'YYYY-MM-DD'), 25, 58.70, 'Female', 'eve.a@example.com', '202 Birch Ct, City E', TO_TIMESTAMP('2025-06-15 10:20:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000009, 1700000009, 'Frank Green', TO_DATE('1965-09-10', 'YYYY-MM-DD'), 59, 90.00, 'Male', 'frank.g@example.com', '303 Willow Dr, City F', TO_TIMESTAMP('2025-06-15 10:25:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000010, 1700000010, 'Grace Hall', TO_DATE('1995-02-28', 'YYYY-MM-DD'), 30, 62.30, 'Female', 'grace.h@example.com', '404 Maple St, City G', TO_TIMESTAMP('2025-06-15 10:30:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000011, 1700000011, 'Henry King', TO_DATE('1980-04-05', 'YYYY-MM-DD'), 45, 82.10, 'Male', 'henry.k@example.com', '505 Poplar Rd, City H', TO_TIMESTAMP('2025-06-15 10:35:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000012, 1700000012, 'Ivy Lee', TO_DATE('1970-12-12', 'YYYY-MM-DD'), 54, 70.00, 'Female', 'ivy.l@example.com', '606 Elm Ct, City I', TO_TIMESTAMP('2025-06-15 10:40:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000013, 1700000013, 'Jack White', TO_DATE('1998-08-08', 'YYYY-MM-DD'), 26, 78.90, 'Male', 'jack.w@example.com', '707 Spruce Dr, City J', TO_TIMESTAMP('2025-06-15 10:45:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000014, 1700000014, 'Karen Black', TO_DATE('1983-06-20', 'YYYY-MM-DD'), 42, 68.50, 'Female', 'karen.b@example.com', '808 Fir St, City K', TO_TIMESTAMP('2025-06-15 10:50:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000015, 1700000015, 'Leo Stone', TO_DATE('1975-01-30', 'YYYY-MM-DD'), 50, 85.30, 'Male', 'leo.s@example.com', '909 Oak St, City L', TO_TIMESTAMP('2025-06-15 10:55:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000016, 1700000016, 'Mia Davis', TO_DATE('1993-09-01', 'YYYY-MM-DD'), 31, 63.80, 'Female', 'mia.d@example.com', '111 Pine St, City M', TO_TIMESTAMP('2025-06-15 11:00:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000017, 1700000017, 'Nora Garcia', TO_DATE('1988-04-18', 'YYYY-MM-DD'), 37, 69.90, 'Female', 'nora.g@example.com', '222 Maple St, City N', TO_TIMESTAMP('2025-06-15 11:05:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000018, 1700000018, 'Oliver Martinez', TO_DATE('1972-10-22', 'YYYY-MM-DD'), 53, 88.00, 'Male', 'oliver.m@example.com', '333 Elm St, City O', TO_TIMESTAMP('2025-06-15 11:10:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000019, 1700000019, 'Penny Lopez', TO_DATE('1997-03-03', 'YYYY-MM-DD'), 28, 60.50, 'Female', 'penny.l@example.com', '444 Oak St, City P', TO_TIMESTAMP('2025-06-15 11:15:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000020, 1700000020, 'Quinn Perez', TO_DATE('1981-07-07', 'YYYY-MM-DD'), 44, 77.70, 'Male', 'quinn.p@example.com', '555 Pine St, City Q', TO_TIMESTAMP('2025-06-15 11:20:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000021, 1700000021, 'Rachel Kim', TO_DATE('1991-01-01', 'YYYY-MM-DD'), 34, 66.20, 'Female', 'rachel.k@example.com', '666 Cedar St, City R', TO_TIMESTAMP('2025-06-15 11:25:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000022, 1700000022, 'Sam Rodriguez', TO_DATE('1976-05-25', 'YYYY-MM-DD'), 49, 81.60, 'Male', 'sam.r@example.com', '777 Birch St, City S', TO_TIMESTAMP('2025-06-15 11:30:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+INSERT INTO Patients (patient_id, phone, name, date_of_birth, Age, Weight, gender, email, address, create_date, created_by) VALUES (1700000023, 1700000023, 'Tina Nguyen', TO_DATE('1994-11-11', 'YYYY-MM-DD'), 30, 64.00, 'Female', 'tina.n@example.com', '888 Willow St, City T', TO_TIMESTAMP('2025-06-15 11:35:00', 'YYYY-MM-DD HH24:MI:SS'), '103');
+
+-- Inserting data into APPOINTMENTS table
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (1, 1, 1700000004, TIMESTAMP '2025-07-01 11:00:00', 'confirmed', 1003, TIMESTAMP '2025-06-15 12:00:00', '104');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (2, 2, 1700000005, TIMESTAMP '2025-07-02 10:00:00', 'pending', 1007, TIMESTAMP '2025-06-15 12:05:00', '105');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (3, 3, 1700000006, TIMESTAMP '2025-07-02 15:00:00', 'completed', 1010, TIMESTAMP '2025-06-15 12:10:00', '106');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (4, 4, 1700000007, TIMESTAMP '2025-07-04 09:00:00', 'cancelled', 1016, TIMESTAMP '2025-06-15 12:15:00', '107');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (5, 5, 1700000008, TIMESTAMP '2025-07-04 14:00:00', 'pending', 1019, TIMESTAMP '2025-06-15 12:20:00', '108');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (6, 6, 1700000009, TIMESTAMP '2025-07-01 09:00:00', 'confirmed', 1001, TIMESTAMP '2025-06-15 12:25:00', '109');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (7, 7, 1700000010, TIMESTAMP '2025-07-01 10:00:00', 'pending', 1002, TIMESTAMP '2025-06-15 12:30:00', '110');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (8, 8, 1700000011, TIMESTAMP '2025-07-01 14:00:00', 'completed', 1004, TIMESTAMP '2025-06-15 12:35:00', '111');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (9, 9, 1700000012, TIMESTAMP '2025-07-01 15:00:00', 'pending', 1005, TIMESTAMP '2025-06-15 12:40:00', '112');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (10, 10, 1700000013, TIMESTAMP '2025-07-02 09:00:00', 'confirmed', 1006, TIMESTAMP '2025-06-15 12:45:00', '113');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (11, 11, 1700000014, TIMESTAMP '2025-07-02 11:00:00', 'pending', 1008, TIMESTAMP '2025-06-15 12:50:00', '114');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (12, 12, 1700000015, TIMESTAMP '2025-07-02 14:00:00', 'completed', 1009, TIMESTAMP '2025-06-15 12:55:00', '115');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (13, 13, 1700000016, TIMESTAMP '2025-07-03 09:00:00', 'pending', 1011, TIMESTAMP '2025-06-15 13:00:00', '116');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (14, 14, 1700000017, TIMESTAMP '2025-07-03 10:00:00', 'confirmed', 1012, TIMESTAMP '2025-06-15 13:05:00', '117');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (15, 15, 1700000018, TIMESTAMP '2025-07-03 11:00:00', 'pending', 1013, TIMESTAMP '2025-06-15 13:10:00', '118');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (16, 16, 1700000019, TIMESTAMP '2025-07-03 14:00:00', 'completed', 1014, TIMESTAMP '2025-06-15 13:15:00', '119');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (17, 17, 1700000020, TIMESTAMP '2025-07-03 15:00:00', 'pending', 1015, TIMESTAMP '2025-06-15 13:20:00', '120');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (18, 18, 1700000004, TIMESTAMP '2025-07-04 10:00:00', 'confirmed', 1017, TIMESTAMP '2025-06-15 13:25:00', '104');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (19, 19, 1700000005, TIMESTAMP '2025-07-04 11:00:00', 'pending', 1018, TIMESTAMP '2025-06-15 13:30:00', '105');
+INSERT INTO Appointments (appointment_id, serial_no, patient_id, appointment_datetime, status, schedule_id, create_date, created_by) VALUES (20, 20, 1700000006, TIMESTAMP '2025-07-04 15:00:00', 'completed', 1020, TIMESTAMP '2025-06-15 13:35:00', '106');
+
+-- Inserting data into GENERIC table
+INSERT INTO Generic (generic_id, generic_name) VALUES (110, 'Paracetamol');
+INSERT INTO Generic (generic_id, generic_name) VALUES (111, 'Amoxicillin');
+INSERT INTO Generic (generic_id, generic_name) VALUES (112, 'Omeprazole');
+INSERT INTO Generic (generic_id, generic_name) VALUES (113, 'Cetirizine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (114, 'Ibuprofen');
+INSERT INTO Generic (generic_id, generic_name) VALUES (115, 'Metformin');
+INSERT INTO Generic (generic_id, generic_name) VALUES (116, 'Atorvastatin');
+INSERT INTO Generic (generic_id, generic_name) VALUES (117, 'Losartan');
+INSERT INTO Generic (generic_id, generic_name) VALUES (118, 'Amlodipine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (119, 'Dextromethorphan');
+INSERT INTO Generic (generic_id, generic_name) VALUES (120, 'Pseudoephedrine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (121, 'Loratadine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (122, 'Sertraline');
+INSERT INTO Generic (generic_id, generic_name) VALUES (123, 'Fluoxetine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (124, 'Tramadol');
+INSERT INTO Generic (generic_id, generic_name) VALUES (125, 'Gabapentin');
+INSERT INTO Generic (generic_id, generic_name) VALUES (126, 'Prednisone');
+INSERT INTO Generic (generic_id, generic_name) VALUES (127, 'Levothyroxine');
+INSERT INTO Generic (generic_id, generic_name) VALUES (128, 'Furosemide');
+INSERT INTO Generic (generic_id, generic_name) VALUES (129, 'Warfarin');
+
+-- Inserting data into MEDICINE table
+-- Added 'dosage_form' and 'strength' columns with default values as they are NOT NULL in the table schema.
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (1, 'Napa', 110, 'Tablet', '500mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (2, 'Amoxycil', 111, 'Capsule', '250mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (3, 'Losectil', 112, 'Capsule', '20mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (4, 'Alatrol', 113, 'Tablet', '10mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (5, 'Profen', 114, 'Tablet', '400mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (6, 'Comet', 115, 'Tablet', '500mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (7, 'Lipitor', 116, 'Tablet', '20mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (8, 'Cozaar', 117, 'Tablet', '50mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (9, 'Norvasc', 118, 'Tablet', '5mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (10, 'Robitussin', 119, 'Syrup', '10mg/5ml');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (11, 'Sudafed', 120, 'Tablet', '30mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (12, 'Claritin', 121, 'Tablet', '10mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (13, 'Zoloft', 122, 'Tablet', '50mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (14, 'Prozac', 123, 'Capsule', '20mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (15, 'Ultram', 124, 'Tablet', '50mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (16, 'Neurontin', 125, 'Capsule', '300mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (17, 'Deltasone', 126, 'Tablet', '5mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (18, 'Synthroid', 127, 'Tablet', '100mcg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (19, 'Lasix', 128, 'Tablet', '40mg');
+INSERT INTO Medicine (medicine_id, brand_name, generic_id, dosage_form, strength) VALUES (20, 'Coumadin', 129, 'Tablet', '5mg');
+
+-- Inserting data into PRESCRIPTION table
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (1, 1, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 10.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (2, 3, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 5.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (3, 6, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (4, 8, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 15.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (5, 10, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (6, 12, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (7, 14, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 7.50, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (8, 16, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (9, 18, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (10, 20, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (11, 2, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (12, 4, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (13, 5, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (14, 7, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (15, 9, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (16, 11, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (17, 13, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (18, 15, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (19, 17, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+INSERT INTO Prescription (prescription_id, appointment_id, doctor_id, issue_date, test_discount, create_date, created_by)
+VALUES (20, 19, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 0.00, SYSDATE, 'Dr.Smith');
+
+-- Inserting data into Prescription_Medicine
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (1, 1, 1, '500mg with food', '7 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (2, 1, 4, '10mg before bed', '14 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (3, 2, 2, '250mg on empty stomach', '10 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (4, 3, 5, '500mg after meals', '5 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (5, 4, 7, '20mg in the morning', '30 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (6, 4, 9, '15mg in the evening', '30 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (7, 5, 1, 'Multivitamin tablet', 'Ongoing');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (8, 6, 3, '200mg before breakfast', '20 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (9, 7, 10, '10ml syrup', '7 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (10, 8, 15, '400mg for pain', '10 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (11, 9, 17, '5ml oral solution', '5 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (12, 10, 18, 'Thyroid support tab', 'Ongoing');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (13, 11, 2, '500mg if infection confirmed', '7 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (14, 13, 6, 'For sugar control', 'Ongoing');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (15, 14, 11, '10ml nasal drop', '3 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (16, 15, 1, '250mg tablet', '7 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (17, 16, 12, '10mg allergy relief', '14 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (18, 17, 13, 'As directed by psychiatrist', 'Ongoing');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (19, 19, 19, '40mg diuretic', '7 days');
+INSERT INTO Prescription_Medicine (prescription_medicine_id, prescription_id, medicine_id, dosage, duration)
+VALUES (20, 20, 20, '5mg blood thinner', 'Ongoing');
+
+-- Inserting data into TEST_LIST table
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (1, 'Complete Blood Count (CBC)', 'Hematology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (2, 'Blood Glucose (Fasting)', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (3, 'Urine Routine Microscopy (Urine R/M)', 'Urinalysis');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (4, 'Lipid Profile', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (5, 'Kidney Function Test (KFT)', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (6, 'Liver Function Test (LFT)', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (7, 'Thyroid Stimulating Hormone (TSH)', 'Endocrinology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (8, 'HbA1c', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (9, 'Electrolytes (Na, K, Cl)', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (10, 'Vitamin D', 'Vitamins');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (11, 'X-ray Chest P/A View', 'Radiology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (12, 'ECG', 'Cardiology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (13, 'Stool R/M', 'Microbiology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (14, 'C-Reactive Protein (CRP)', 'Inflammation Markers');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (15, 'Erythrocyte Sedimentation Rate (ESR)', 'Inflammation Markers');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (16, 'Creatinine', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (17, 'Blood Grouping and Rh Typing', 'Blood Bank');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (18, 'Uric Acid', 'Clinical Chemistry');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (19, 'Hepatitis B Surface Antigen (HBsAg)', 'Serology');
+INSERT INTO Test_List (test_id, test_name, test_category) VALUES (20, 'Dengue NS1 Antigen Test', 'Serology');
+
+-- Inserting data into PRESCRIBED_TEST table
+-- Added default test_name as it's not null in the schema
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (1, 1, 1, 'Complete Blood Count (CBC)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (2, 4, 1, 'Lipid Profile');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (3, 2, 2, 'Blood Glucose (Fasting)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (4, 3, 3, 'Urine Routine Microscopy (Urine R/M)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (5, 7, 4, 'Thyroid Stimulating Hormone (TSH)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (6, 8, 4, 'HbA1c');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (7, 5, 5, 'Kidney Function Test (KFT)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (8, 6, 6, 'Liver Function Test (LFT)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (9, 9, 7, 'Electrolytes (Na, K, Cl)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (10, 10, 8, 'Vitamin D');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (11, 11, 9, 'X-ray Chest P/A View');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (12, 12, 10, 'ECG');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (13, 1, 11, 'Complete Blood Count (CBC)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (14, 2, 12, 'Blood Glucose (Fasting)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (15, 5, 13, 'Kidney Function Test (KFT)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (16, 14, 14, 'C-Reactive Protein (CRP)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (17, 15, 15, 'Erythrocyte Sedimentation Rate (ESR)');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (18, 16, 16, 'Creatinine');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (19, 17, 17, 'Blood Grouping and Rh Typing');
+INSERT INTO Prescribed_Test (prescribed_test_id, test_id, prescription_id, test_name) VALUES (20, 18, 18, 'Uric Acid');
+
+-- Inserting data into Test_Report_Master
+-- Added 'sample_date', 'report_date', and 'created_by' columns with default values
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (1, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000004, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1, 'Lab Technician A', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (2, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000004, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 4, 'Lab Technician B', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (3, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1700000006, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 2, 'Lab Technician C', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (4, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000007, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 7, 'Lab Technician D', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (5, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000007, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 8, 'Lab Technician E', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (6, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 1700000004, TO_DATE('2025-07-05', 'YYYY-MM-DD'), 1, 'Lab Technician F', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (7, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000009, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 3, 'Lab Technician G', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (8, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1700000013, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 5, 'Lab Technician H', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (9, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1700000015, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 6, 'Lab Technician I', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (10, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000017, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 9, 'Lab Technician J', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (11, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000019, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 10, 'Lab Technician K', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (12, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 1700000005, TO_DATE('2025-07-05', 'YYYY-MM-DD'), 12, 'Lab Technician L', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (13, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000011, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1, 'Lab Technician M', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (14, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1700000005, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 2, 'Lab Technician N', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (15, 1, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 1700000008, TO_DATE('2025-07-05', 'YYYY-MM-DD'), 5, 'Lab Technician O', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (16, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000010, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 14, 'Lab Technician P', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (17, 1, TO_DATE('2025-07-01', 'YYYY-MM-DD'), 1700000012, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 15, 'Lab Technician Q', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (18, 1, TO_DATE('2025-07-02', 'YYYY-MM-DD'), 1700000014, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 16, 'Lab Technician R', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (19, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000016, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 17, 'Lab Technician S', 'AdminUser');
+INSERT INTO Test_Report_Master (test_report_master_id, doctor_id, sample_date, patient_id, report_date, test_id, report_by, created_by)
+VALUES (20, 1, TO_DATE('2025-07-03', 'YYYY-MM-DD'), 1700000018, TO_DATE('2025-07-04', 'YYYY-MM-DD'), 18, 'Lab Technician T', 'AdminUser');
+
+
+-- Inserting data into Test_Report_Details
+-- Added default values for 'particulars', 'reference_value', 'result_value'
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (1, 1, 'Hemoglobin', '13-17 g/dL', '14.5 g/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (2, 1, 'White Blood Cell (WBC)', '4.0-10.0 x 10^9/L', '7.2 x 10^9/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (3, 2, 'Total Cholesterol', '<200 mg/dL', '185 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (4, 2, 'HDL Cholesterol', '>40 mg/dL', '55 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (5, 3, 'Fasting Glucose', '70-99 mg/dL', '92 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (6, 4, 'TSH', '0.4-4.0 mIU/L', '2.1 mIU/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (7, 5, 'HbA1c', '<5.7%', '5.4%');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (8, 6, 'Platelet Count', '150-450 x 10^9/L', '280 x 10^9/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (9, 7, 'Urine Color', 'Yellow', 'Pale Yellow');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (10, 8, 'Creatinine', '0.6-1.2 mg/dL', '0.9 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (11, 9, 'ALT', '0-45 U/L', '30 U/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (12, 10, 'Sodium', '135-145 mmol/L', '140 mmol/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (13, 11, '25-hydroxy Vitamin D', '30-100 ng/mL', '45 ng/mL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (14, 12, 'Heart Rate', '60-100 bpm', '75 bpm');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (15, 13, 'Red Blood Cell (RBC)', '4.5-5.5 x 10^12/L', '5.1 x 10^12/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (16, 14, 'Fasting Glucose', '70-99 mg/dL', '95 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (17, 15, 'Blood Urea Nitrogen (BUN)', '7-20 mg/dL', '15 mg/dL');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (18, 16, 'C-Reactive Protein', '<3.0 mg/L', '2.5 mg/L');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (19, 17, 'ESR', '0-15 mm/hr', '10 mm/hr');
+INSERT INTO Test_Report_Details (test_report_details_id, test_report_master_id, particulars, reference_value, result_value) VALUES (20, 18, 'Creatinine', '0.6-1.2 mg/dL', '1.0 mg/dL');
+
+-- Inserting data into INVESTIGATION table
+-- Changed 'prescription_id' to reference 'prescription(prescription_id)' instead of 'patients(patient_id)'
+-- Added 'problem_name' as it's NOT NULL
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (1, 1, 'Persistent Cough');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (2, 2, 'Fever of Unknown Origin');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (3, 3, 'Abdominal Pain');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (4, 4, 'Fatigue and Weakness');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (5, 5, 'Joint Swelling');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (6, 6, 'Headaches and Dizziness');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (7, 7, 'Skin Rash');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (8, 8, 'Chest Pain');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (9, 9, 'Numbness in Extremities');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (10, 10, 'Vision Changes');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (11, 11, 'Sore Throat');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (12, 12, 'Muscle Aches');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (13, 13, 'Shortness of Breath');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (14, 14, 'Frequent Urination');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (15, 15, 'Weight Loss');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (16, 16, 'Anxiety');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (17, 17, 'Loss of Appetite');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (18, 18, 'Swollen Glands');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (19, 19, 'Insomnia');
+INSERT INTO Investigation (investigation_id, prescription_id, problem_name) VALUES (20, 20, 'Digestive Issues');
+
+-- Inserting data into ADVICE table
+-- Added default values for 'advice_type', 'advice_text', 'follow_up_day'
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (1, 1, 'Lifestyle', 'Get plenty of rest and stay hydrated.', TO_DATE('2025-07-08', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (2, 2, 'Dietary', 'Eat a balanced diet with plenty of fruits and vegetables.', TO_DATE('2025-07-09', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (3, 3, 'Exercise', 'Engage in light to moderate exercise daily.', TO_DATE('2025-07-10', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (4, 4, 'Medical', 'Monitor blood pressure regularly.', TO_DATE('2025-07-11', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (5, 5, 'Lifestyle', 'Avoid smoking and excessive alcohol consumption.', TO_DATE('2025-07-12', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (6, 6, 'Dietary', 'Reduce intake of sugary drinks and processed foods.', TO_DATE('2025-07-13', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (7, 7, 'Exercise', 'Incorporate strength training into your routine.', TO_DATE('2025-07-14', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (8, 8, 'Medical', 'Keep track of your blood glucose levels.', TO_DATE('2025-07-15', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (9, 9, 'Lifestyle', 'Practice stress-reduction techniques.', TO_DATE('2025-07-16', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (10, 10, 'Dietary', 'Increase fiber intake for better digestion.', TO_DATE('2025-07-17', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (11, 11, 'Lifestyle', 'Ensure proper hand hygiene.', TO_DATE('2025-07-18', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (12, 12, 'Exercise', 'Try low-impact exercises like swimming.', TO_DATE('2025-07-19', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (13, 13, 'Medical', 'Take prescribed medication as directed.', TO_DATE('2025-07-20', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (14, 14, 'Dietary', 'Limit caffeine intake.', TO_DATE('2025-07-21', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (15, 15, 'Lifestyle', 'Get regular check-ups.', TO_DATE('2025-07-22', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (16, 16, 'Exercise', 'Walk for at least 30 minutes daily.', TO_DATE('2025-07-23', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (17, 17, 'Medical', 'Follow up with a specialist if symptoms persist.', TO_DATE('2025-07-24', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (18, 18, 'Dietary', 'Increase protein intake.', TO_DATE('2025-07-25', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (19, 19, 'Lifestyle', 'Ensure a consistent sleep schedule.', TO_DATE('2025-07-26', 'YYYY-MM-DD'));
+INSERT INTO Advice (advice_id, prescription_id, advice_type, advice_text, follow_up_day) VALUES (20, 20, 'Exercise', 'Consider yoga or pilates for flexibility.', TO_DATE('2025-07-27', 'YYYY-MM-DD'));
+
+-- Inserting data into EXPENSE_MASTER table
+-- Added default values for all columns as they are NOT NULL in the table schema.
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (1, 101, TO_DATE('2025-06-20', 'YYYY-MM-DD'), 'Utilities', 500.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (2, 101, TO_DATE('2025-06-21', 'YYYY-MM-DD'), 'Salaries', 5000.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (3, 101, TO_DATE('2025-06-22', 'YYYY-MM-DD'), 'Medical Supplies', 1200.50);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (4, 103, TO_DATE('2025-06-23', 'YYYY-MM-DD'), 'Office Supplies', 150.75);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (5, 104, TO_DATE('2025-06-24', 'YYYY-MM-DD'), 'Equipment Maintenance', 300.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (6, 105, TO_DATE('2025-06-25', 'YYYY-MM-DD'), 'Rent', 2000.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (7, 101, TO_DATE('2025-06-26', 'YYYY-MM-DD'), 'Marketing', 450.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (8, 103, TO_DATE('2025-06-27', 'YYYY-MM-DD'), 'Travel', 80.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (9, 104, TO_DATE('2025-06-28', 'YYYY-MM-DD'), 'Insurance', 700.00);
+INSERT INTO Expense_Master (expense_id, user_id, expense_date, category, total_amount) VALUES (10, 105, TO_DATE('2025-06-29', 'YYYY-MM-DD'), 'Miscellaneous', 100.25);
+
+-- Inserting data into EXPENSE_DETAILS table
+-- Added 'description' and 'amount' columns with default values as they are NOT NULL in the table schema.
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (1, 1, 'Electricity bill', 250.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (2, 1, 'Water bill', 100.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (3, 1, 'Internet bill', 150.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (4, 2, 'Doctor salaries', 3000.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (5, 2, 'Staff salaries', 2000.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (6, 3, 'Syringes', 300.25);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (7, 3, 'Bandages', 100.50);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (8, 3, 'Medicines stock', 800.75);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (9, 4, 'Printer paper', 50.25);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (10, 4, 'Pens and notepads', 100.50);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (11, 5, 'X-ray machine repair', 300.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (12, 6, 'Monthly clinic rent', 2000.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (13, 7, 'Online ads', 250.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (14, 7, 'Pamphlet printing', 200.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (15, 8, 'Conference travel', 80.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (16, 9, 'Building insurance', 700.00);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (17, 10, 'Cleaning supplies', 50.25);
+INSERT INTO Expense_Details (detail_id, expense_id, description, amount) VALUES (18, 10, 'Small repairs', 50.00);
+
+--SAVE COMMAND
+COMMIT;
